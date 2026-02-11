@@ -1,150 +1,177 @@
-#running: streamlit run "c:/Users/field/Downloads/Compressed/kasir otomatis/kasir.py"
 import streamlit as st
-try:
-    import pandas as pd
-    import plotly.express as px
-    import plotly.graph_objects as go
-    import psycopg2
-    from psycopg2.extras import DictCursor
-    import sqlalchemy as sa
-except Exception as e:
-    st.error("Missing dependency: pandas, plotly, psycopg2 or sqlalchemy.\nPlease run: `pip install -r requirements.txt`")
-    raise
-from datetime import datetime, timedelta
-import re
+import pandas as pd
+import sqlite3
+from datetime import datetime
 
 # ========================
-# KONFIGURASI DATABASE
-# ========================
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "ruziq_db",
-    "user": "ruziq354",
-    "password": "merdeka354",
-    "port": 5432
-}
-
-# ========================
-# DATABASE CONNECTION HELPER
+# DATABASE CONNECTION
 # ========================
 def get_db_connection():
-    """Buat koneksi ke PostgreSQL"""
-    try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        return conn
-    except Exception as e:
-        st.error(f"Gagal terhubung ke database: {e}")
-        raise
+    conn = sqlite3.connect("kasir.db", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def get_sqlalchemy_engine():
-    """Buat SQLAlchemy engine untuk pandas"""
-    try:
-        db_url = f"postgresql://ruziq354:merdeka354@localhost:5432/ruziq_db"
-        engine = sa.create_engine(db_url)
-        return engine
-    except Exception as e:
-        st.error(f"Gagal membuat SQLAlchemy engine: {e}")
-        raise
 
+# ========================
+# INIT DATABASE (AUTO CREATE TABLE)
+# ========================
+def init_database():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # TABEL USER
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_kasir (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        password TEXT,
+        role TEXT
+    )
+    """)
+
+    # TABEL MASTER BARANG
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS master_barang (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kode TEXT,
+        nama_barang TEXT,
+        satuan TEXT,
+        harga REAL,
+        modal REAL,
+        stok REAL
+    )
+    """)
+
+    # TABEL TRANSAKSI
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS transaksi (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kasir TEXT,
+        nama_barang TEXT,
+        jumlah REAL,
+        satuan TEXT,
+        harga REAL,
+        total_harga REAL,
+        tanggal_waktu TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# WAJIB DIPANGGIL
+init_database()
+
+
+# ========================
+# READ TABLE
+# ========================
 def read_table(table_name):
-    """Baca data dari tabel PostgreSQL ke DataFrame"""
+    conn = get_db_connection()
     try:
-        engine = get_sqlalchemy_engine()
-        query = f"SELECT * FROM {table_name}"
-        df = pd.read_sql_query(query, engine)
-        engine.dispose()
+        df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
         return df
     except Exception as e:
-        st.warning(f"Tidak bisa baca tabel {table_name}. Pastikan database sudah di-setup dengan init_database.sql")
+        st.warning(f"Tidak bisa baca tabel {table_name}")
         return pd.DataFrame()
+    finally:
+        conn.close()
 
-def execute_query(query, params=None):
-    """Eksekusi query tanpa return data"""
-    try:
-        engine = get_sqlalchemy_engine()
-        with engine.connect() as conn:
-            if params:
-                conn.execute(sa.text(query), params)
-            else:
-                conn.execute(sa.text(query))
-            conn.commit()
-        engine.dispose()
-    except Exception as e:
-        st.error(f"Error eksekusi query: {e}")
 
+# ========================
+# INSERT TRANSAKSI
+# ========================
 def insert_transaksi(data):
-    """Insert transaksi ke database"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        engine = get_sqlalchemy_engine()
-        # Convert numpy types to native Python types
-        data_clean = {
-            'kasir': str(data['kasir']),
-            'nama_barang': str(data['nama_barang']),
-            'jumlah': float(data['jumlah']),
-            'satuan': str(data['satuan']),
-            'harga': float(data['harga']),
-            'total_harga': float(data['total_harga']),
-            'tanggal_waktu': data['tanggal_waktu']
-        }
-        df_insert = pd.DataFrame([data_clean])
-        df_insert.to_sql('transaksi', engine, if_exists='append', index=False)
-        engine.dispose()
+        cursor.execute("""
+        INSERT INTO transaksi
+        (kasir, nama_barang, jumlah, satuan, harga, total_harga, tanggal_waktu)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(data['kasir']),
+            str(data['nama_barang']),
+            float(data['jumlah']),
+            str(data['satuan']),
+            float(data['harga']),
+            float(data['total_harga']),
+            str(data['tanggal_waktu'])
+        ))
+        conn.commit()
         return True
     except Exception as e:
         st.error(f"Error insert transaksi: {e}")
         return False
+    finally:
+        conn.close()
 
-def update_stok(nama_barang, new_stok):
-    """Update stok barang"""
-    try:
-        engine = get_sqlalchemy_engine()
-        # Convert numpy types to native Python types
-        new_stok = float(new_stok)
-        with engine.connect() as conn:
-            query = sa.text("UPDATE master_barang SET stok = :stok WHERE nama_barang = :nama")
-            conn.execute(query, {"stok": new_stok, "nama": nama_barang})
-            conn.commit()
-        engine.dispose()
-        return True
-    except Exception as e:
-        st.error(f"Error update stok: {e}")
-        return False
 
+# ========================
+# INSERT BARANG
+# ========================
 def insert_barang(data):
-    """Insert barang baru ke master"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        engine = get_sqlalchemy_engine()
-        # Convert numpy types to native Python types
-        data_clean = {
-            'kode': str(data['kode']),
-            'nama_barang': str(data['nama_barang']),
-            'satuan': str(data['satuan']),
-            'harga': float(data['harga']),
-            'modal': float(data['modal']),
-            'stok': float(data['stok'])
-        }
-        df_insert = pd.DataFrame([data_clean])
-        df_insert.to_sql('master_barang', engine, if_exists='append', index=False)
-        engine.dispose()
+        cursor.execute("""
+        INSERT INTO master_barang
+        (kode, nama_barang, satuan, harga, modal, stok)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            str(data['kode']),
+            str(data['nama_barang']),
+            str(data['satuan']),
+            float(data['harga']),
+            float(data['modal']),
+            float(data['stok'])
+        ))
+        conn.commit()
         return True
     except Exception as e:
         st.error(f"Error insert barang: {e}")
         return False
+    finally:
+        conn.close()
 
-def delete_transaksi(transaksi_id):
-    """Delete transaksi by ID"""
+
+# ========================
+# UPDATE STOK
+# ========================
+def update_stok(nama_barang, new_stok):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        engine = get_sqlalchemy_engine()
-        with engine.connect() as conn:
-            query = sa.text("DELETE FROM transaksi WHERE id = :id")
-            conn.execute(query, {"id": transaksi_id})
-            conn.commit()
-        engine.dispose()
+        cursor.execute("""
+        UPDATE master_barang
+        SET stok = ?
+        WHERE nama_barang = ?
+        """, (float(new_stok), nama_barang))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Error update stok: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+# ========================
+# DELETE TRANSAKSI
+# ========================
+def delete_transaksi(transaksi_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM transaksi WHERE id = ?", (transaksi_id,))
+        conn.commit()
         return True
     except Exception as e:
         st.error(f"Error delete transaksi: {e}")
         return False
-
+    finally:
+        conn.close()
 # ========================
 # PAGE CONFIG
 # ========================
