@@ -11,8 +11,8 @@ def init_database():
     )
     """)
 
-    # CEK USER DEFAULT
-    cursor.execute("SELECT * FROM user_kasir WHERE username = ?", ("admin",))
+    # CEK USER DEFAULT RUZIQ
+    cursor.execute("SELECT * FROM user_kasir WHERE username = ?", ("ruziq354",))
     user = cursor.fetchone()
 
     if not user:
